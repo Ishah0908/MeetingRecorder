@@ -76,20 +76,9 @@ struct TranscriptSegment: Identifiable {
     let id = UUID()
     /// "You" (microphone) or "Others" (system audio).
     let speaker: String
-    /// The recognized text, in whatever language was detected.
     let text: String
-    /// Detected language code for this chunk ("en-US", "es-ES", …).
-    let languageCode: String
     /// When this segment was finalized — used to interleave the two streams.
     let time: Date
-    /// English translation, filled in asynchronously for non-English chunks.
-    var translation: String?
-
-    /// Short uppercase language badge for the UI ("EN", "ES").
-    var languageBadge: String { String(languageCode.prefix(2)).uppercased() }
-
-    /// `true` when this chunk needs translating to English.
-    var needsTranslation: Bool { !languageCode.hasPrefix("en") }
 }
 
 // MARK: - Per-source live recognizer
@@ -117,9 +106,8 @@ final class SourceRecognizer {
 
     /// Latest partial (in-progress) text for this source.
     var onPartial: ((String) -> Void)?
-    /// A finalized chunk: text, an average confidence (0–1), and the time it
-    /// finalized. Confidence is used to decide which language understood best.
-    var onSegment: ((_ text: String, _ confidence: Double, _ time: Date) -> Void)?
+    /// A finalized chunk of text plus the time it finalized.
+    var onSegment: ((String, Date) -> Void)?
     /// Called if recognition gives up after repeated immediate failures.
     var onError: ((String) -> Void)?
 
@@ -179,8 +167,7 @@ final class SourceRecognizer {
             guard let self else { return }
 
             if let result {
-                let transcription = result.bestTranscription
-                let text = transcription.formattedString
+                let text = result.bestTranscription.formattedString
                 lastText = text
                 // Any real output means the recognizer is healthy — clear the
                 // failure counter so an earlier hiccup doesn't trip the cap.
@@ -189,12 +176,7 @@ final class SourceRecognizer {
 
                 if result.isFinal {
                     if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        // Average per-word confidence: the wrong-language
-                        // recognizer scores low here, which is how we pick.
-                        let segs = transcription.segments
-                        let confidence = segs.isEmpty ? 0
-                            : Double(segs.map(\.confidence).reduce(0, +)) / Double(segs.count)
-                        self.onSegment?(text, confidence, Date())
+                        self.onSegment?(text, Date())
                     }
                     self.restart(afterError: false)
                 }
@@ -202,7 +184,7 @@ final class SourceRecognizer {
 
             if error != nil {
                 if !lastText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.onSegment?(lastText, 0, Date())
+                    self.onSegment?(lastText, Date())
                 }
                 self.restart(afterError: true)
             }
@@ -244,139 +226,6 @@ final class SourceRecognizer {
     }
 }
 
-// MARK: - Per-source bilingual transcriber
-
-/// Runs an English and a Spanish recognizer on the SAME audio source and
-/// decides, per phrase, which language actually understood the speech — so the
-/// user never has to pick a language.
-///
-/// How detection works: `SFSpeechRecognizer` is locale-locked and can't
-/// auto-detect, so we transcribe with both and compare. The recognizer hearing
-/// the "wrong" language produces fewer words at lower confidence; the right one
-/// wins. Finals from both languages that land in the same brief window (between
-/// natural pauses) are batched and scored together, then only the winner is
-/// emitted — so there are no duplicates.
-final class SourceTranscriber {
-
-    let label: String
-    private let englishCode: String
-    private let spanishCode: String
-    private let english: SourceRecognizer
-    private let spanish: SourceRecognizer
-
-    /// Best current partial (live preview), regardless of language.
-    var onPartial: ((String) -> Void)?
-    /// A finalized chunk: text, detected language code, finalize time.
-    var onSegment: ((_ text: String, _ language: String, _ time: Date) -> Void)?
-    var onError: ((String) -> Void)?
-
-    private struct Final { let text: String; let confidence: Double; let time: Date }
-
-    private let lock = NSLock()
-    private var partialEnglish = ""
-    private var partialSpanish = ""
-    private var batchEnglish: [Final] = []
-    private var batchSpanish: [Final] = []
-    private var flushWork: DispatchWorkItem?
-
-    /// `true` if at least one of the two language recognizers is available.
-    var isUsable: Bool { english.isUsable || spanish.isUsable }
-
-    init(label: String, englishCode: String = "en-US", spanishCode: String = "es-ES") {
-        self.label = label
-        self.englishCode = englishCode
-        self.spanishCode = spanishCode
-        english = SourceRecognizer(label: "\(label)·en", locale: Locale(identifier: englishCode))
-        spanish = SourceRecognizer(label: "\(label)·es", locale: Locale(identifier: spanishCode))
-
-        english.onPartial = { [weak self] t in self?.handlePartial(t, isEnglish: true) }
-        spanish.onPartial = { [weak self] t in self?.handlePartial(t, isEnglish: false) }
-        english.onSegment = { [weak self] t, c, time in self?.handleFinal(t, c, time, isEnglish: true) }
-        spanish.onSegment = { [weak self] t, c, time in self?.handleFinal(t, c, time, isEnglish: false) }
-        english.onError = { [weak self] m in self?.onError?(m) }
-        spanish.onError = { [weak self] m in self?.onError?(m) }
-    }
-
-    func start() {
-        if english.isUsable { english.start() }
-        if spanish.isUsable { spanish.start() }
-    }
-
-    func append(_ buffer: AVAudioPCMBuffer) {
-        english.append(buffer)
-        spanish.append(buffer)
-    }
-
-    func stop() {
-        lock.lock(); flushWork?.cancel(); flushWork = nil; lock.unlock()
-        english.stop()
-        spanish.stop()
-        flush()   // emit anything still batched
-    }
-
-    // MARK: Arbitration
-
-    private func handlePartial(_ text: String, isEnglish: Bool) {
-        lock.lock()
-        if isEnglish { partialEnglish = text } else { partialSpanish = text }
-        let en = partialEnglish, es = partialSpanish
-        lock.unlock()
-        // Show whichever language currently has more words as the live preview.
-        onPartial?(Self.wordCount(en) >= Self.wordCount(es) ? en : es)
-    }
-
-    private func handleFinal(_ text: String, _ confidence: Double, _ time: Date, isEnglish: Bool) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        lock.lock()
-        if isEnglish {
-            batchEnglish.append(Final(text: trimmed, confidence: confidence, time: time))
-            partialEnglish = ""
-        } else {
-            batchSpanish.append(Final(text: trimmed, confidence: confidence, time: time))
-            partialSpanish = ""
-        }
-        flushWork?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.flush() }
-        flushWork = work
-        lock.unlock()
-        // Debounce: wait briefly so the other language's final for the same
-        // phrase can arrive and be compared before we emit.
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.9, execute: work)
-    }
-
-    private func flush() {
-        lock.lock()
-        let en = batchEnglish, es = batchSpanish
-        batchEnglish = []; batchSpanish = []
-        flushWork = nil
-        lock.unlock()
-
-        if en.isEmpty && es.isEmpty { return }
-        if es.isEmpty { return emit(en, englishCode) }
-        if en.isEmpty { return emit(es, spanishCode) }
-        // Both languages produced something — higher score wins.
-        if Self.score(en) >= Self.score(es) { emit(en, englishCode) }
-        else { emit(es, spanishCode) }
-    }
-
-    private func emit(_ batch: [Final], _ language: String) {
-        guard let last = batch.last else { return }
-        let text = batch.map(\.text).joined(separator: " ")
-        onSegment?(text, language, last.time)
-    }
-
-    // Score favours more words AND higher confidence — the correct-language
-    // transcription almost always has both.
-    private static func score(_ batch: [Final]) -> Double {
-        batch.reduce(0) { $0 + max($1.confidence, 0.05) * Double(wordCount($1.text)) }
-    }
-
-    private static func wordCount(_ text: String) -> Int {
-        text.split { $0 == " " || $0 == "\n" }.count
-    }
-}
-
 // MARK: - Engine
 
 /// Observable engine exposing both live and file-based transcription with
@@ -414,18 +263,18 @@ final class TranscriptionEngine: ObservableObject {
 
     // MARK: Private
 
-    // One bilingual transcriber per audio source (each runs English + Spanish
-    // recognizers and auto-detects). nonisolated(unsafe) so the nonisolated
+    // One recognizer per audio source. nonisolated(unsafe) so the nonisolated
     // append methods can reach them from the audio thread.
-    nonisolated(unsafe) private var you: SourceTranscriber
-    nonisolated(unsafe) private var others: SourceTranscriber
+    nonisolated(unsafe) private var you: SourceRecognizer
+    nonisolated(unsafe) private var others: SourceRecognizer
 
     // File-mode task.
     private var recognitionTask: SFSpeechRecognitionTask?
 
     init() {
-        you = SourceTranscriber(label: "You")
-        others = SourceTranscriber(label: "Others")
+        let locale = Locale(identifier: "en-US")
+        you = SourceRecognizer(label: "You", locale: locale)
+        others = SourceRecognizer(label: "Others", locale: locale)
     }
 
     // MARK: - Live API
@@ -456,9 +305,10 @@ final class TranscriptionEngine: ObservableObject {
             return
         }
 
-        // Fresh bilingual transcribers (English + Spanish) per source.
-        you = SourceTranscriber(label: "You")
-        others = SourceTranscriber(label: "Others")
+        // Fresh recognizers per source.
+        let locale = Locale(identifier: "en-US")
+        you = SourceRecognizer(label: "You", locale: locale)
+        others = SourceRecognizer(label: "Others", locale: locale)
 
         guard you.isUsable, others.isUsable else {
             status = "Live transcription off — speech recognition isn't available on this Mac."
@@ -471,14 +321,14 @@ final class TranscriptionEngine: ObservableObject {
         you.onPartial = { [weak self] text in
             Task { @MainActor in self?.livePartialYou = text }
         }
-        you.onSegment = { [weak self] text, language, time in
-            Task { @MainActor in self?.commit(speaker: "You", text: text, language: language, time: time) }
+        you.onSegment = { [weak self] text, time in
+            Task { @MainActor in self?.commit(speaker: "You", text: text, time: time) }
         }
         others.onPartial = { [weak self] text in
             Task { @MainActor in self?.livePartialOthers = text }
         }
-        others.onSegment = { [weak self] text, language, time in
-            Task { @MainActor in self?.commit(speaker: "Others", text: text, language: language, time: time) }
+        others.onSegment = { [weak self] text, time in
+            Task { @MainActor in self?.commit(speaker: "Others", text: text, time: time) }
         }
         let onErr: (String) -> Void = { [weak self] msg in
             Task { @MainActor in self?.status = msg }
@@ -489,7 +339,7 @@ final class TranscriptionEngine: ObservableObject {
         you.start()
         others.start()
         isLive = true
-        status = "Live transcription running (auto English/Spanish)…"
+        status = "Live transcription running…"
     }
 
     /// Stop live transcription, flush any trailing partials, assemble the
@@ -505,13 +355,12 @@ final class TranscriptionEngine: ObservableObject {
         others.stop()
         isLive = false
 
-        // Flush any leftover in-progress text as final segments (assume English,
-        // the safe default, since these never went through arbitration).
+        // Flush any leftover in-progress text as final segments.
         if !livePartialYou.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            commit(speaker: "You", text: livePartialYou, language: "en-US", time: Date())
+            commit(speaker: "You", text: livePartialYou, time: Date())
         }
         if !livePartialOthers.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            commit(speaker: "Others", text: livePartialOthers, language: "en-US", time: Date())
+            commit(speaker: "Others", text: livePartialOthers, time: Date())
         }
 
         guard !segments.isEmpty else {
@@ -535,33 +384,18 @@ final class TranscriptionEngine: ObservableObject {
         }
     }
 
-    /// Build the full transcript text: streams interleaved by time, each line
-    /// tagged with speaker and language, with the English translation appended
-    /// for non-English chunks when available.
+    /// Build the full transcript text: the two streams interleaved by time,
+    /// each line tagged with its speaker.
     func assembledTranscript() -> String {
-        segments.sorted { $0.time < $1.time }.map { seg in
-            var line = "[\(seg.speaker) · \(seg.languageBadge)] \(seg.text)"
-            if seg.needsTranslation, let en = seg.translation, !en.isEmpty {
-                line += "\n    → (EN) \(en)"
-            }
-            return line
-        }
-        .joined(separator: "\n")
+        segments.sorted { $0.time < $1.time }
+            .map { "[\($0.speaker)] \($0.text)" }
+            .joined(separator: "\n")
     }
 
     /// Append a finalized segment and clear that source's live partial.
-    private func commit(speaker: String, text: String, language: String, time: Date) {
-        segments.append(TranscriptSegment(speaker: speaker, text: text,
-                                          languageCode: language, time: time, translation: nil))
+    private func commit(speaker: String, text: String, time: Date) {
+        segments.append(TranscriptSegment(speaker: speaker, text: text, time: time))
         if speaker == "You" { livePartialYou = "" } else { livePartialOthers = "" }
-    }
-
-    /// Store an English translation for a previously-committed segment.
-    /// Called by the view's translation task as results come back.
-    func applyTranslation(id: UUID, english: String) {
-        guard let i = segments.firstIndex(where: { $0.id == id }) else { return }
-        segments[i].translation = english
-        if !isLive { transcript = assembledTranscript() }
     }
 
     // MARK: - File-based API (fallback / re-transcribe)

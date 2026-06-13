@@ -123,17 +123,11 @@ The **Identify speakers** button under the last recording runs an optional local
 
 It needs a one-time setup (a Python venv + a free Hugging Face token). The first time you click the button the app walks you through it; full details are in [`tools/diarize/README.md`](tools/diarize/README.md).
 
-#### Languages & translation (automatic)
+#### Languages
 
-There's **no language picker** — each source auto-detects **English vs Spanish**, and Spanish is translated to English live.
+Live transcription is **English**. Apple's `SFSpeechRecognizer` is locale-locked and can't auto-detect a language; running an English and a Spanish recognizer on the same stream in parallel was tried and produced duplicate, garbled lines, so it was removed in favor of clean, reliable English.
 
-Apple's `SFSpeechRecognizer` is locale-locked and can't auto-detect, so each source (`SourceTranscriber`) runs an **English and a Spanish recognizer in parallel** on the same audio. The recognizer that hears the "wrong" language produces fewer words at lower confidence; for each phrase the higher-scoring language (confidence × word count) wins and is emitted — no duplicates. Detected Spanish chunks are then translated to English on-device via Apple's **Translation framework** (`.translationTask`), shown with a `→` beneath the original and saved into the `.txt`.
-
-Notes:
-- This runs **four** recognizers during a meeting (2 sources × 2 languages). It's fine on Apple Silicon but uses more CPU than a single-language session.
-- The first Spanish translation prompts macOS to download the Spanish↔English model (one time, free).
-- Detection is best-effort and leans on confidence/word-count heuristics; very short utterances can be misattributed. For the most robust bilingual results on a saved recording, the offline diarize tool (Whisper) auto-detects and has a `--translate` flag.
-- Add languages by giving `SourceTranscriber` more recognizers; the offline tool already handles any Whisper-supported language.
+For **other languages and translation**, use the offline diarize tool ([`tools/diarize/`](tools/diarize/)): Whisper genuinely auto-detects the spoken language, and `diarize.py --translate` writes an all-English transcript regardless of what was spoken. It runs on a saved recording rather than live.
 
 ---
 
