@@ -6,7 +6,7 @@ A lightweight macOS app that records **both sides of any online meeting** — yo
 
 ## Why this exists
 
-Most screen recorders capture one track or the other, or let you configure complex routing. MeetingRecorder does exactly two things: press Start before your call, press Stop when you're done — you get a properly mixed WAV in `~/Documents/MeetingRecordings/`. Then hit **Transcribe** to turn the recording into a searchable `.txt` file using Apple's speech recognition.
+Most screen recorders capture one track or the other, or let you configure complex routing. MeetingRecorder does exactly two things: press Start before your call, press Stop when you're done — you get a properly mixed WAV in `~/Documents/MeetingRecordings/` **and a live, speaker-labeled transcript** that writes itself as people talk, saved as a `.txt` beside the recording.
 
 ---
 
@@ -96,7 +96,24 @@ Hidden temp files (`.meeting-*.mic.wav`, `.meeting-*.system.wav`) are deleted au
 
 ### Transcription
 
-After a recording is saved, a **Transcribe** button appears. It uses `SFSpeechURLRecognitionRequest` (server-side, for best accuracy and to support recordings longer than ~1 minute) to produce a punctuated transcript and saves it as a `.txt` file beside the WAV. A **Copy** button lets you paste the text anywhere.
+Transcription runs in two ways:
+
+**Live (primary).** The moment you press Start, speech recognition runs alongside the recording and text appears on screen as people speak. Because the app already captures two separate sources, it runs **two recognizers in parallel** and labels their output:
+
+| Tag | Source | Who it is |
+|-----|--------|-----------|
+| 🔵 **You** | Microphone | Your own voice |
+| 🟢 **Others** | System audio | Everyone else on the call |
+
+On Stop, the two streams are interleaved by time into one conversation and saved as a `.txt` beside the WAV.
+
+**File (fallback).** A **Re-transcribe file** button runs `SFSpeechURLRecognitionRequest` on the finished mix — useful if live transcription wasn't available (e.g. permission was granted after recording started).
+
+#### A note on speaker identification
+
+Apple's Speech framework has **no built-in speaker diarization** — you can't get "Speaker 1 / Speaker 2" labels out of a single mixed stream. The **You / Others** split above works because the two sides of the call are captured as physically separate audio streams. Telling apart *individual remote participants* from one another (within the system audio) would require an external model such as [pyannote](https://github.com/pyannote/pyannote-audio) / WhisperX, or a cloud API like Deepgram or AssemblyAI. That isn't wired up here.
+
+Live recognition prefers **on-device** transcription (`requiresOnDeviceRecognition`) so it runs continuously for long meetings and works offline.
 
 ---
 

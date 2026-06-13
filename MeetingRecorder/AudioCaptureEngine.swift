@@ -84,6 +84,14 @@ final class AudioCaptureEngine: NSObject, ObservableObject {
     private var systemURL: URL?
     private var mixedURL: URL?
 
+    // MARK: - Live taps (for live transcription)
+    // Each converted Float32 / 48 kHz / mono buffer is forwarded here as it is
+    // written to disk, so a live transcriber can consume the SAME audio without
+    // a second capture path. Set to nil to disable. Marked nonisolated(unsafe)
+    // because they are invoked from the audio callbacks on `writeQueue`.
+    nonisolated(unsafe) var onMicBuffer: ((AVAudioPCMBuffer) -> Void)?
+    nonisolated(unsafe) var onSystemBuffer: ((AVAudioPCMBuffer) -> Void)?
+
     // Common format both sources get converted to before writing.
     private let outputFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32,
                                              sampleRate: 48000,
@@ -180,6 +188,7 @@ final class AudioCaptureEngine: NSObject, ObservableObject {
                       let converted = Self.convert(buffer, with: converter),
                       let file = self.micFile else { return }
                 try? file.write(from: converted)
+                self.onMicBuffer?(converted)   // forward to live transcriber
             }
         }
 
@@ -374,6 +383,7 @@ extension AudioCaptureEngine: SCStreamOutput {
                   let converted = Self.convert(pcm, with: converter),
                   let file = self.systemFile else { return }
             try? file.write(from: converted)
+            self.onSystemBuffer?(converted)   // forward to live transcriber
         }
     }
 

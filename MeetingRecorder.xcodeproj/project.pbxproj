@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		053A944577AD8C87F4BC2EB5 /* MeetingRecorderApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 04D26A6FD0F50DA4C06EEBC0 /* MeetingRecorderApp.swift */; };
 		972056FD4F304C3AAA184A65 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F569810D75FB2B49B08DB0F0 /* ContentView.swift */; };
+		E2ACE951AB8F716CE1096DBC /* TranscriptionEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB690A3D97866A0B0B32E9A0 /* TranscriptionEngine.swift */; };
 		EE68DC27FB3EB13B25AAC22E /* AudioCaptureEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69E13902CDE541D48D555665 /* AudioCaptureEngine.swift */; };
 /* End PBXBuildFile section */
 
@@ -16,6 +17,7 @@
 		04D26A6FD0F50DA4C06EEBC0 /* MeetingRecorderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingRecorderApp.swift; sourceTree = "<group>"; };
 		18795E6ED89555755D74F655 /* MeetingRecorder.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = MeetingRecorder.entitlements; sourceTree = "<group>"; };
 		69E13902CDE541D48D555665 /* AudioCaptureEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureEngine.swift; sourceTree = "<group>"; };
+		CB690A3D97866A0B0B32E9A0 /* TranscriptionEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionEngine.swift; sourceTree = "<group>"; };
 		CC5A5E7D89DE1ADF1AF506A9 /* MeetingRecorder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MeetingRecorder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DFAFF384C8BB44D1823F45A1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		F569810D75FB2B49B08DB0F0 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -38,6 +40,7 @@
 				DFAFF384C8BB44D1823F45A1 /* Info.plist */,
 				18795E6ED89555755D74F655 /* MeetingRecorder.entitlements */,
 				04D26A6FD0F50DA4C06EEBC0 /* MeetingRecorderApp.swift */,
+				CB690A3D97866A0B0B32E9A0 /* TranscriptionEngine.swift */,
 			);
 			path = MeetingRecorder;
 			sourceTree = "<group>";
@@ -112,6 +115,7 @@
 				EE68DC27FB3EB13B25AAC22E /* AudioCaptureEngine.swift in Sources */,
 				972056FD4F304C3AAA184A65 /* ContentView.swift in Sources */,
 				053A944577AD8C87F4BC2EB5 /* MeetingRecorderApp.swift in Sources */,
+				E2ACE951AB8F716CE1096DBC /* TranscriptionEngine.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

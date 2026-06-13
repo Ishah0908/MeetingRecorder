@@ -4,15 +4,13 @@
 //
 //  Main screen of the app. Binds the UI to two observable engines:
 //    • AudioCaptureEngine  — manages the recording lifecycle
-//    • TranscriptionEngine — transcribes a saved WAV on demand
+//    • TranscriptionEngine — live + file-based transcription
 //
-//  Layout (top → bottom):
-//    1. Animated recording indicator  — pulsing red circle while active
-//    2. Status label                  — reflects the engine's current phase
-//    3. Start / Stop button           — toggles startRecording / stopRecording
-//    4. Last Recording box            — filename, Show in Finder, Transcribe button
-//    5. Transcript panel              — appears after a successful transcription
-//    6. Permission reminder           — non-blocking hint
+//  When you press Start, the app begins recording AND live transcription at the
+//  same time. The mic stream is labeled "You" and the system-audio stream is
+//  labeled "Others", so the transcript separates the two sides of the call as
+//  text appears. On Stop, the interleaved transcript is saved as a .txt beside
+//  the WAV.
 //
 //  Author : Ibrahim Sultan
 //  Requires: macOS 15 (Sequoia) · Xcode 16 · Swift 5.10
@@ -20,192 +18,272 @@
 
 import SwiftUI
 
-/// Primary view. All recording and transcription logic lives in their
-/// respective engines; this view handles only presentation and user interaction.
+/// Primary view. All recording/transcription logic lives in the engines;
+/// this view handles only presentation and user interaction.
 struct ContentView: View {
 
     /// Manages the full recording lifecycle (capture → mix → save).
     @StateObject private var engine = AudioCaptureEngine()
 
-    /// Manages on-demand transcription of a saved WAV file.
+    /// Manages live + file-based transcription.
     @StateObject private var transcription = TranscriptionEngine()
 
     /// Drives the pulsing animation on the recording indicator.
     @State private var pulse = false
 
+    /// True when there is any transcript content to show (live or finished).
+    private var hasTranscriptContent: Bool {
+        transcription.isLive
+            || !transcription.segments.isEmpty
+            || !transcription.livePartialYou.isEmpty
+            || !transcription.livePartialOthers.isEmpty
+    }
+
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
 
-            // ── Recording indicator ──────────────────────────────────────────
-            // Outer ring pulses (1.0 → 1.4) while recording; inner dot is red
-            // while recording and grey while idle.
-            ZStack {
-                Circle()
-                    .fill(engine.isRecording ? Color.red.opacity(0.15) : Color.clear)
-                    .frame(width: 64, height: 64)
-                    .scaleEffect(pulse ? 1.4 : 1.0)
-                    .animation(
-                        engine.isRecording
-                            ? .easeInOut(duration: 1).repeatForever(autoreverses: true)
-                            : .default,
-                        value: pulse
-                    )
-                Circle()
-                    .fill(engine.isRecording ? Color.red : Color.gray.opacity(0.4))
-                    .frame(width: 28, height: 28)
-            }
-            .onChange(of: engine.isRecording) { _, recording in
-                pulse = recording
-            }
+            recordingIndicator
 
-            // ── Status label ─────────────────────────────────────────────────
-            // Shows "Idle", "Recording…", "Mixing…", or "Saved: filename".
             Text(engine.statusMessage)
                 .font(.headline)
-                .foregroundStyle(.primary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 380)
+                .frame(maxWidth: 420)
 
-            // ── Start / Stop button ──────────────────────────────────────────
-            // Wrapped in Task so the async engine methods don't block the main thread.
-            Button {
-                Task {
-                    if engine.isRecording {
-                        await engine.stopRecording()
-                    } else {
-                        await engine.startRecording()
-                    }
-                }
-            } label: {
-                Label(
-                    engine.isRecording ? "Stop Recording" : "Start Recording",
-                    systemImage: engine.isRecording ? "stop.circle.fill" : "mic.circle.fill"
-                )
-                .font(.title3.weight(.semibold))
-                .frame(minWidth: 200)
+            startStopButton
+
+            if hasTranscriptContent {
+                transcriptPanel
             }
-            .buttonStyle(.borderedProminent)
-            .tint(engine.isRecording ? .red : .accentColor)
-            .controlSize(.large)
 
-            // ── Last Recording box ───────────────────────────────────────────
-            // Shown once a recording has been successfully saved.
-            // Contains the filename, "Show in Finder", and the Transcribe button.
             if let url = engine.lastRecordingURL {
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-
-                        Label("Last Recording", systemImage: "waveform")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-
-                        Text(url.lastPathComponent)
-                            .font(.caption.monospaced())
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-
-                        // Action buttons side by side
-                        HStack(spacing: 10) {
-                            Button("Show in Finder") {
-                                NSWorkspace.shared.activateFileViewerSelecting([url])
-                            }
-                            .controlSize(.small)
-
-                            // Transcribe button — disabled while a task is running.
-                            Button {
-                                Task { await transcription.transcribe(audioURL: url) }
-                            } label: {
-                                if transcription.isTranscribing {
-                                    HStack(spacing: 5) {
-                                        ProgressView().scaleEffect(0.7)
-                                        Text("Transcribing…")
-                                    }
-                                } else {
-                                    Label("Transcribe", systemImage: "text.bubble")
-                                }
-                            }
-                            .controlSize(.small)
-                            .disabled(transcription.isTranscribing)
-
-                            // Cancel button — only visible while transcribing.
-                            if transcription.isTranscribing {
-                                Button("Cancel") { transcription.cancel() }
-                                    .controlSize(.small)
-                                    .foregroundStyle(.red)
-                            }
-                        }
-
-                        // Transcription phase status (progress or error message)
-                        if !transcription.status.isEmpty {
-                            Text(transcription.status)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxWidth: 420)
+                lastRecordingBox(url: url)
             }
 
-            // ── Transcript panel ─────────────────────────────────────────────
-            // Appears after a successful transcription. Scrollable, selectable,
-            // with Copy and "Show .txt file" actions.
-            if !transcription.transcript.isEmpty {
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-
-                        // Header row
-                        HStack {
-                            Label("Transcript", systemImage: "text.quote")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                            Spacer()
-
-                            // Copy to clipboard
-                            Button {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(
-                                    transcription.transcript, forType: .string)
-                            } label: {
-                                Label("Copy", systemImage: "doc.on.doc")
-                            }
-                            .controlSize(.small)
-
-                            // Open the saved .txt file in Finder
-                            if let txtURL = transcription.transcriptURL {
-                                Button("Show file") {
-                                    NSWorkspace.shared.activateFileViewerSelecting([txtURL])
-                                }
-                                .controlSize(.small)
-                            }
-                        }
-
-                        Divider()
-
-                        // Scrollable transcript text — text selection enabled
-                        // so the user can highlight + copy individual sentences.
-                        ScrollView {
-                            Text(transcription.transcript)
-                                .font(.body)
-                                .textSelection(.enabled)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(.vertical, 4)
-                        }
-                        .frame(height: 220)
-                    }
-                }
-                .frame(maxWidth: 420)
-            }
-
-            // ── Permission reminder ──────────────────────────────────────────
             Text("Requires Microphone, Screen Recording & Speech Recognition permissions\n(System Settings → Privacy & Security)")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
         }
-        .padding(36)
-        .frame(minWidth: 520, minHeight: 400)
+        .padding(28)
+        .frame(minWidth: 560, minHeight: 520)
+    }
+
+    // MARK: - Recording indicator
+
+    /// Pulsing red circle while recording; grey dot while idle.
+    private var recordingIndicator: some View {
+        ZStack {
+            Circle()
+                .fill(engine.isRecording ? Color.red.opacity(0.15) : Color.clear)
+                .frame(width: 60, height: 60)
+                .scaleEffect(pulse ? 1.4 : 1.0)
+                .animation(
+                    engine.isRecording
+                        ? .easeInOut(duration: 1).repeatForever(autoreverses: true)
+                        : .default,
+                    value: pulse
+                )
+            Circle()
+                .fill(engine.isRecording ? Color.red : Color.gray.opacity(0.4))
+                .frame(width: 26, height: 26)
+        }
+        .onChange(of: engine.isRecording) { _, recording in
+            pulse = recording
+        }
+    }
+
+    // MARK: - Start / Stop
+
+    /// Toggles recording + live transcription together.
+    private var startStopButton: some View {
+        Button {
+            Task {
+                if engine.isRecording {
+                    // Stop recording first so lastRecordingURL is set, then
+                    // stop live transcription and save the .txt beside the WAV.
+                    await engine.stopRecording()
+                    engine.onMicBuffer = nil
+                    engine.onSystemBuffer = nil
+                    await transcription.stopLive(besideAudio: engine.lastRecordingURL)
+                } else {
+                    // Set up live transcription, wire the audio taps, then record.
+                    await transcription.startLive()
+                    engine.onMicBuffer = { [transcription] buf in transcription.appendYou(buf) }
+                    engine.onSystemBuffer = { [transcription] buf in transcription.appendOthers(buf) }
+                    await engine.startRecording()
+                }
+            }
+        } label: {
+            Label(
+                engine.isRecording ? "Stop Recording" : "Start Recording",
+                systemImage: engine.isRecording ? "stop.circle.fill" : "mic.circle.fill"
+            )
+            .font(.title3.weight(.semibold))
+            .frame(minWidth: 200)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(engine.isRecording ? .red : .accentColor)
+        .controlSize(.large)
+    }
+
+    // MARK: - Live transcript panel
+
+    /// Scrollable, color-coded transcript that updates live while recording.
+    /// "You" (mic) is blue, "Others" (system audio) is green. The most recent
+    /// in-progress text for each source shows at the bottom in a lighter tone.
+    private var transcriptPanel: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+
+                // Header with live badge + actions.
+                HStack {
+                    Label("Transcript", systemImage: "text.quote")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    if transcription.isLive {
+                        HStack(spacing: 4) {
+                            Circle().fill(.red).frame(width: 7, height: 7)
+                            Text("LIVE").font(.caption2.weight(.bold)).foregroundStyle(.red)
+                        }
+                    }
+
+                    Spacer()
+
+                    Button {
+                        let text = transcription.transcript.isEmpty
+                            ? assembledLiveText()
+                            : transcription.transcript
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(text, forType: .string)
+                    } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .controlSize(.small)
+
+                    if let txtURL = transcription.transcriptURL {
+                        Button("Show file") {
+                            NSWorkspace.shared.activateFileViewerSelecting([txtURL])
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                Divider()
+
+                // Scrolling list of finalized segments + live partials, pinned
+                // to the bottom so new text stays visible.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(transcription.segments) { seg in
+                                segmentRow(speaker: seg.speaker, text: seg.text, faded: false)
+                            }
+                            if !transcription.livePartialYou.isEmpty {
+                                segmentRow(speaker: "You", text: transcription.livePartialYou, faded: true)
+                            }
+                            if !transcription.livePartialOthers.isEmpty {
+                                segmentRow(speaker: "Others", text: transcription.livePartialOthers, faded: true)
+                            }
+                            Color.clear.frame(height: 1).id("bottom")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                    }
+                    .frame(height: 240)
+                    .onChange(of: transcription.segments.count) { _, _ in
+                        withAnimation { proxy.scrollTo("bottom", anchor: .bottom) }
+                    }
+                    .onChange(of: transcription.livePartialYou) { _, _ in
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                    .onChange(of: transcription.livePartialOthers) { _, _ in
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+
+                if !transcription.status.isEmpty {
+                    Text(transcription.status)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .frame(maxWidth: 460)
+    }
+
+    /// One transcript line: a colored speaker tag followed by the text.
+    private func segmentRow(speaker: String, text: String, faded: Bool) -> some View {
+        let color: Color = speaker == "You" ? .blue : .green
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(speaker.uppercased())
+                .font(.caption2.weight(.bold))
+                .foregroundStyle(color)
+                .frame(width: 54, alignment: .leading)
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(faded ? .secondary : .primary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// Assemble the current live segments into plain text (used by Copy before
+    /// the final transcript has been built on Stop).
+    private func assembledLiveText() -> String {
+        transcription.segments
+            .sorted { $0.time < $1.time }
+            .map { "[\($0.speaker)] \($0.text)" }
+            .joined(separator: "\n")
+    }
+
+    // MARK: - Last recording box
+
+    /// Shows the saved WAV with Finder access and a file-based re-transcribe
+    /// option (useful if live transcription wasn't available).
+    private func lastRecordingBox(url: URL) -> some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 8) {
+                Label("Last Recording", systemImage: "waveform")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+
+                Text(url.lastPathComponent)
+                    .font(.caption.monospaced())
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                HStack(spacing: 10) {
+                    Button("Show in Finder") {
+                        NSWorkspace.shared.activateFileViewerSelecting([url])
+                    }
+                    .controlSize(.small)
+
+                    Button {
+                        Task { await transcription.transcribe(audioURL: url) }
+                    } label: {
+                        if transcription.isTranscribing {
+                            HStack(spacing: 5) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("Transcribing…")
+                            }
+                        } else {
+                            Label("Re-transcribe file", systemImage: "arrow.clockwise")
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(transcription.isTranscribing || engine.isRecording)
+
+                    if transcription.isTranscribing {
+                        Button("Cancel") { transcription.cancel() }
+                            .controlSize(.small)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: 460)
     }
 }
 
