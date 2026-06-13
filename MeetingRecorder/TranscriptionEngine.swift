@@ -213,7 +213,10 @@ final class SourceRecognizer {
                 }
             }
 
-            if error != nil {
+            if let error {
+                #if DEBUG
+                print("MeetingRecorder speech error [\(self.label)]: \(error.localizedDescription)")
+                #endif
                 if !self.isStopping { commitAccumulated() }
                 self.restart(afterError: true)
             }
@@ -239,21 +242,19 @@ final class SourceRecognizer {
 
         guard stillRunning else { return }
 
-        if failures >= 8 {
-            lock.lock(); running = false; lock.unlock()
-            onError?("Live transcription stopped after repeated recognition errors.")
-            return
-        }
+        // Self-healing: never permanently stop. On repeated errors we back off
+        // (capped) so we don't hammer a failing recognizer — e.g. the "Others"
+        // stream getting silence when nothing is playing — but we keep retrying
+        // so transcription resumes the instant there's speech again. A clean
+        // isFinal rollover restarts almost immediately. The failure counter is
+        // reset whenever any real text comes back, so the cadence snaps back to
+        // fast as soon as recognition is working.
+        let delay = afterError
+            ? min(0.2 * pow(2.0, Double(min(failures - 1, 4))), 1.5)   // 0.2s → 1.5s
+            : 0.05
 
-        if afterError {
-            // Short delay avoids a tight loop on a persistently-failing
-            // recognizer (capped above), while keeping the audio gap small at
-            // the recognizer's ~1-minute boundary.
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                self?.beginRequest()
-            }
-        } else {
-            beginRequest()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) { [weak self] in
+            self?.beginRequest()
         }
     }
 }
