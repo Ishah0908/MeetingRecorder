@@ -26,5 +26,7 @@
 	<string>MeetingRecorder needs microphone access to record your voice during calls.</string>
 	<key>NSScreenCaptureDescription</key>
 	<string>MeetingRecorder needs Screen Recording access to capture system audio from calls.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>MeetingRecorder uses speech recognition to transcribe your recorded meetings to text.</string>
 </dict>
 </plist>

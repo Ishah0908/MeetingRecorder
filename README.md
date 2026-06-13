@@ -6,7 +6,7 @@ A lightweight macOS app that records **both sides of any online meeting** — yo
 
 ## Why this exists
 
-Most screen recorders capture one track or the other, or let you configure complex routing. MeetingRecorder does exactly one thing: press Start before your call, press Stop when you're done, get a properly mixed recording saved to `~/Documents/MeetingRecordings/`.
+Most screen recorders capture one track or the other, or let you configure complex routing. MeetingRecorder does exactly two things: press Start before your call, press Stop when you're done — you get a properly mixed WAV in `~/Documents/MeetingRecordings/`. Then hit **Transcribe** to turn the recording into a searchable `.txt` file using Apple's speech recognition.
 
 ---
 
@@ -76,8 +76,9 @@ On first launch macOS will prompt for:
 |------------|----------------|
 | **Microphone** | To capture your voice via AVAudioEngine |
 | **Screen Recording** | ScreenCaptureKit requires this to access system audio — even though no screen pixels are ever captured |
+| **Speech Recognition** | Required to transcribe recordings to text via `SFSpeechRecognizer` |
 
-Grant both in **System Settings → Privacy & Security**.  
+Grant all three in **System Settings → Privacy & Security**.  
 If you deny either, the app will show an error and stop gracefully.
 
 ---
@@ -88,9 +89,14 @@ Recordings are saved to `~/Documents/MeetingRecordings/`:
 
 ```
 meeting-2026-06-12T14-30-00Z.wav    ← the final mixed file you keep
+meeting-2026-06-12T14-30-00Z.txt    ← transcript (created when you click Transcribe)
 ```
 
 Hidden temp files (`.meeting-*.mic.wav`, `.meeting-*.system.wav`) are deleted automatically after a successful mix. If mixing fails, the raw tracks are kept so no audio is lost.
+
+### Transcription
+
+After a recording is saved, a **Transcribe** button appears. It uses `SFSpeechURLRecognitionRequest` (server-side, for best accuracy and to support recordings longer than ~1 minute) to produce a punctuated transcript and saves it as a `.txt` file beside the WAV. A **Copy** button lets you paste the text anywhere.
 
 ---
 
@@ -103,7 +109,8 @@ MeetingRecorder/
 └── MeetingRecorder/
     ├── MeetingRecorderApp.swift    ← App entry point, window configuration
     ├── ContentView.swift           ← Single-screen UI (SwiftUI)
-    ├── AudioCaptureEngine.swift    ← All recording logic (ScreenCaptureKit + AVAudioEngine)
+    ├── AudioCaptureEngine.swift    ← Recording logic (ScreenCaptureKit + AVAudioEngine + mix)
+    ├── TranscriptionEngine.swift   ← SFSpeechRecognizer wrapper with async/await interface
     ├── MeetingRecorder.entitlements
     └── Info.plist
 ```

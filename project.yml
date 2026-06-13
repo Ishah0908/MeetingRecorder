@@ -25,6 +25,7 @@ targets:
         CFBundleShortVersionString: "1.0"
         NSMicrophoneUsageDescription: "MeetingRecorder needs microphone access to record your voice during calls."
         NSScreenCaptureDescription: "MeetingRecorder needs Screen Recording access to capture system audio from calls."
+        NSSpeechRecognitionUsageDescription: "MeetingRecorder uses speech recognition to transcribe your recorded meetings to text."
         LSMinimumSystemVersion: "15.0"
     settings:
       base:
