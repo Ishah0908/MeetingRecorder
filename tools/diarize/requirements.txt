@@ -1,0 +1,6 @@
+# WhisperX pulls in faster-whisper (transcription), pyannote.audio
+# (diarization) and torch automatically. On macOS pip installs the CPU build
+# of torch — there is no CUDA on Apple hardware.
+#
+# This install can be a few GB and take a while the first time.
+whisperx>=3.1.1

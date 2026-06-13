@@ -55,3 +55,9 @@ Carthage/Build/
 *~
 *.swp
 *.swo
+
+# Diarization tool: local Python env and secret token
+tools/diarize/.venv/
+tools/diarize/.hf_token
+__pycache__/
+*.pyc

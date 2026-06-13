@@ -111,9 +111,17 @@ On Stop, the two streams are interleaved by time into one conversation and saved
 
 #### A note on speaker identification
 
-Apple's Speech framework has **no built-in speaker diarization** — you can't get "Speaker 1 / Speaker 2" labels out of a single mixed stream. The **You / Others** split above works because the two sides of the call are captured as physically separate audio streams. Telling apart *individual remote participants* from one another (within the system audio) would require an external model such as [pyannote](https://github.com/pyannote/pyannote-audio) / WhisperX, or a cloud API like Deepgram or AssemblyAI. That isn't wired up here.
+Apple's Speech framework has **no built-in speaker diarization** — you can't get "Speaker 1 / Speaker 2" labels out of a single mixed stream. The **You / Others** split above works because the two sides of the call are captured as physically separate audio streams.
+
+Telling apart *individual remote participants* from one another (within the system audio) needs a real diarization model. That's available here as an **optional, free, local** tool — see [Identifying individual speakers](#identifying-individual-speakers-advanced) below.
 
 Live recognition prefers **on-device** transcription (`requiresOnDeviceRecognition`) so it runs continuously for long meetings and works offline.
+
+#### Identifying individual speakers (advanced)
+
+The **Identify speakers** button under the last recording runs an optional local tool ([`tools/diarize/`](tools/diarize/)) that uses [WhisperX](https://github.com/m-bain/whisperX) + [pyannote](https://github.com/pyannote/pyannote-audio) to split the call into Speaker 1 / Speaker 2 / … and writes a `*.diarized.txt`. It's free and runs entirely on your Mac (CPU), so it works **after** the meeting rather than live, and takes a few minutes.
+
+It needs a one-time setup (a Python venv + a free Hugging Face token). The first time you click the button the app walks you through it; full details are in [`tools/diarize/README.md`](tools/diarize/README.md).
 
 #### Languages
 
@@ -147,11 +155,18 @@ Then run the (properly signed) app and grant each permission a final time. After
 MeetingRecorder/
 ├── MeetingRecorder.xcodeproj/
 ├── project.yml                     ← XcodeGen spec (optional, for regenerating the project)
+├── tools/
+│   └── diarize/                    ← Optional local speaker-diarization tool (Python)
+│       ├── diarize.py              ← WhisperX + pyannote → speaker-labeled transcript
+│       ├── requirements.txt
+│       ├── setup.sh                ← One-time venv + dependency install
+│       └── README.md
 └── MeetingRecorder/
     ├── MeetingRecorderApp.swift    ← App entry point, window configuration
     ├── ContentView.swift           ← Single-screen UI (SwiftUI)
     ├── AudioCaptureEngine.swift    ← Recording logic (ScreenCaptureKit + AVAudioEngine + mix)
-    ├── TranscriptionEngine.swift   ← SFSpeechRecognizer wrapper with async/await interface
+    ├── TranscriptionEngine.swift   ← Live + file SFSpeechRecognizer wrapper (You/Others, multi-language)
+    ├── DiarizationRunner.swift     ← Shells out to the optional diarization tool
     ├── MeetingRecorder.entitlements
     └── Info.plist
 ```

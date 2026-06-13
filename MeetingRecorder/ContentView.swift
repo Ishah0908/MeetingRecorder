@@ -28,8 +28,14 @@ struct ContentView: View {
     /// Manages live + file-based transcription.
     @StateObject private var transcription = TranscriptionEngine()
 
+    /// Runs the optional local speaker-diarization tool.
+    @StateObject private var diarizer = DiarizationRunner()
+
     /// Drives the pulsing animation on the recording indicator.
     @State private var pulse = false
+
+    /// Controls the diarization setup/help sheet.
+    @State private var showDiarizeInfo = false
 
     /// True when there is any transcript content to show (live or finished).
     private var hasTranscriptContent: Bool {
@@ -301,10 +307,103 @@ struct ContentView: View {
                             .foregroundStyle(.red)
                     }
                 }
+
+                // Advanced: split "Others" into individual speakers via the
+                // optional local WhisperX/pyannote tool. Opens setup if needed.
+                HStack(spacing: 10) {
+                    Button {
+                        if diarizer.isReady {
+                            diarizer.run(audioURL: url, language: transcription.language)
+                        } else {
+                            showDiarizeInfo = true
+                        }
+                    } label: {
+                        if diarizer.isRunning {
+                            HStack(spacing: 5) {
+                                ProgressView().scaleEffect(0.7)
+                                Text("Identifying speakers…")
+                            }
+                        } else {
+                            Label("Identify speakers", systemImage: "person.2.wave.2")
+                        }
+                    }
+                    .controlSize(.small)
+                    .disabled(diarizer.isRunning || engine.isRecording)
+
+                    if diarizer.isRunning {
+                        Button("Cancel") { diarizer.cancel() }
+                            .controlSize(.small)
+                            .foregroundStyle(.red)
+                    }
+
+                    if let out = diarizer.outputURL {
+                        Button("Show speaker transcript") {
+                            NSWorkspace.shared.activateFileViewerSelecting([out])
+                        }
+                        .controlSize(.small)
+                    }
+                }
+
+                if diarizer.isRunning, !diarizer.status.isEmpty {
+                    Text(diarizer.status)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let err = diarizer.lastError {
+                    Text(err)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(3)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxWidth: 460)
+        .sheet(isPresented: $showDiarizeInfo) { diarizeSetupSheet }
+    }
+
+    // MARK: - Diarization setup sheet
+
+    /// One-time setup / help for the optional speaker-identification tool.
+    private var diarizeSetupSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Identify individual speakers")
+                .font(.title3.bold())
+
+            Text("Splits the “Others” side of a call into Speaker 1, Speaker 2, … using a free, on-device model (WhisperX + pyannote). It runs after the meeting, not live, and takes a few minutes on a Mac.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Text("One-time setup")
+                .font(.headline)
+            VStack(alignment: .leading, spacing: 6) {
+                Label("In Terminal, run ./setup.sh inside the project's tools/diarize folder.", systemImage: "1.circle")
+                Label("Get a free Hugging Face token and accept the pyannote model terms.", systemImage: "2.circle")
+                Label("Save the token to tools/diarize/.hf_token", systemImage: "3.circle")
+                Label("Click “Locate diarize.py…” below and pick the script.", systemImage: "4.circle")
+            }
+            .font(.callout)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if let path = diarizer.scriptPath {
+                Text(diarizer.isReady ? "✓ Ready: \(path)" : "Located, but run setup.sh: \(path)")
+                    .font(.caption)
+                    .foregroundStyle(diarizer.isReady ? .green : .orange)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+
+            HStack {
+                Button("Locate diarize.py…") { diarizer.locateScript() }
+                Spacer()
+                Button("Done") { showDiarizeInfo = false }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(24)
+        .frame(width: 470)
     }
 }
 
