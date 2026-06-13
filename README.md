@@ -98,7 +98,7 @@ Hidden temp files (`.meeting-*.mic.wav`, `.meeting-*.system.wav`) are deleted au
 
 Transcription runs in two ways:
 
-**Live (primary).** The moment you press Start, speech recognition runs alongside the recording and text appears on screen as people speak. Because the app already captures two separate sources, it runs **two recognizers in parallel** and labels their output:
+**Live (primary).** The moment you press Start, speech recognition runs alongside the recording and text appears on screen as people speak. Because the app already captures two separate sources, it labels their output:
 
 | Tag | Source | Who it is |
 |-----|--------|-----------|
@@ -123,9 +123,17 @@ The **Identify speakers** button under the last recording runs an optional local
 
 It needs a one-time setup (a Python venv + a free Hugging Face token). The first time you click the button the app walks you through it; full details are in [`tools/diarize/README.md`](tools/diarize/README.md).
 
-#### Languages
+#### Languages & translation (automatic)
 
-A language picker (English / Spanish) sits above the Start button. The selection sets the `SFSpeechRecognizer` locale for both the live and file-based transcribers, and is locked while recording. Add more languages by extending `TranscriptionLanguage` in `TranscriptionEngine.swift` with any identifier from `SFSpeechRecognizer.supportedLocales()`.
+There's **no language picker** — each source auto-detects **English vs Spanish**, and Spanish is translated to English live.
+
+Apple's `SFSpeechRecognizer` is locale-locked and can't auto-detect, so each source (`SourceTranscriber`) runs an **English and a Spanish recognizer in parallel** on the same audio. The recognizer that hears the "wrong" language produces fewer words at lower confidence; for each phrase the higher-scoring language (confidence × word count) wins and is emitted — no duplicates. Detected Spanish chunks are then translated to English on-device via Apple's **Translation framework** (`.translationTask`), shown with a `→` beneath the original and saved into the `.txt`.
+
+Notes:
+- This runs **four** recognizers during a meeting (2 sources × 2 languages). It's fine on Apple Silicon but uses more CPU than a single-language session.
+- The first Spanish translation prompts macOS to download the Spanish↔English model (one time, free).
+- Detection is best-effort and leans on confidence/word-count heuristics; very short utterances can be misattributed. For the most robust bilingual results on a saved recording, the offline diarize tool (Whisper) auto-detects and has a `--translate` flag.
+- Add languages by giving `SourceTranscriber` more recognizers; the offline tool already handles any Whisper-supported language.
 
 ---
 

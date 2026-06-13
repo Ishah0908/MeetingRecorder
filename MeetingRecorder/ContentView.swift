@@ -8,15 +8,16 @@
 //
 //  When you press Start, the app begins recording AND live transcription at the
 //  same time. The mic stream is labeled "You" and the system-audio stream is
-//  labeled "Others", so the transcript separates the two sides of the call as
-//  text appears. On Stop, the interleaved transcript is saved as a .txt beside
-//  the WAV.
+//  labeled "Others". Each stream auto-detects English vs Spanish, and Spanish is
+//  translated to English live via Apple's Translation framework. On Stop, the
+//  interleaved transcript (with translations) is saved as a .txt beside the WAV.
 //
 //  Author : Ibrahim Sultan
 //  Requires: macOS 15 (Sequoia) · Xcode 16 · Swift 5.10
 //
 
 import SwiftUI
+import Translation
 
 /// Primary view. All recording/transcription logic lives in the engines;
 /// this view handles only presentation and user interaction.
@@ -37,6 +38,10 @@ struct ContentView: View {
     /// Controls the diarization setup/help sheet.
     @State private var showDiarizeInfo = false
 
+    /// Drives the on-device Spanish→English translation task. Set when there are
+    /// Spanish segments awaiting translation; `invalidate()` re-runs the task.
+    @State private var translationConfig: TranslationSession.Configuration?
+
     /// True when there is any transcript content to show (live or finished).
     private var hasTranscriptContent: Bool {
         transcription.isLive
@@ -55,7 +60,7 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
 
-            languagePicker
+            autoLanguageBadge
 
             startStopButton
 
@@ -74,6 +79,13 @@ struct ContentView: View {
         }
         .padding(28)
         .frame(minWidth: 560, minHeight: 520)
+        // Translate Spanish segments to English on-device as they arrive.
+        .translationTask(translationConfig) { session in
+            await translatePendingSegments(using: session)
+        }
+        .onChange(of: transcription.segments.count) { _, _ in
+            requestTranslationIfNeeded()
+        }
     }
 
     // MARK: - Recording indicator
@@ -102,20 +114,40 @@ struct ContentView: View {
 
     // MARK: - Language
 
-    /// Picks the transcription language. Locked while recording so the live
-    /// recognizers aren't swapped mid-session.
-    private var languagePicker: some View {
-        HStack(spacing: 8) {
+    /// Static indicator: language is auto-detected, no selection needed.
+    private var autoLanguageBadge: some View {
+        HStack(spacing: 6) {
             Image(systemName: "globe")
-                .foregroundStyle(.secondary)
-            Picker("Language", selection: $transcription.language) {
-                ForEach(TranscriptionLanguage.allCases) { lang in
-                    Text(lang.displayName).tag(lang)
-                }
+            Text("Auto-detects English & Spanish · translates Spanish → English")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+
+    // MARK: - Translation
+
+    /// If any Spanish segment is still awaiting translation, (re)trigger the
+    /// translation task by setting or invalidating the configuration.
+    private func requestTranslationIfNeeded() {
+        let hasPending = transcription.segments.contains { $0.needsTranslation && $0.translation == nil }
+        guard hasPending else { return }
+        if translationConfig == nil {
+            translationConfig = TranslationSession.Configuration(
+                source: Locale.Language(identifier: "es"),
+                target: Locale.Language(identifier: "en"))
+        } else {
+            translationConfig?.invalidate()
+        }
+    }
+
+    /// Translate every untranslated Spanish segment using the provided session.
+    /// The first call may prompt the user to download the language pair.
+    private func translatePendingSegments(using session: TranslationSession) async {
+        let pending = transcription.segments.filter { $0.needsTranslation && $0.translation == nil }
+        for seg in pending {
+            if let response = try? await session.translate(seg.text) {
+                transcription.applyTranslation(id: seg.id, english: response.targetText)
             }
-            .labelsHidden()
-            .frame(maxWidth: 220)
-            .disabled(engine.isRecording)
         }
     }
 
@@ -204,13 +236,13 @@ struct ContentView: View {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
                             ForEach(transcription.segments) { seg in
-                                segmentRow(speaker: seg.speaker, text: seg.text, faded: false)
+                                segmentRow(seg)
                             }
                             if !transcription.livePartialYou.isEmpty {
-                                segmentRow(speaker: "You", text: transcription.livePartialYou, faded: true)
+                                partialRow(speaker: "You", text: transcription.livePartialYou)
                             }
                             if !transcription.livePartialOthers.isEmpty {
-                                segmentRow(speaker: "Others", text: transcription.livePartialOthers, faded: true)
+                                partialRow(speaker: "Others", text: transcription.livePartialOthers)
                             }
                             Color.clear.frame(height: 1).id("bottom")
                         }
@@ -239,8 +271,44 @@ struct ContentView: View {
         .frame(maxWidth: 460)
     }
 
-    /// One transcript line: a colored speaker tag followed by the text.
-    private func segmentRow(speaker: String, text: String, faded: Bool) -> some View {
+    /// A finalized transcript line: speaker + language badge, the original text,
+    /// and — for Spanish — the English translation beneath it.
+    private func segmentRow(_ seg: TranscriptSegment) -> some View {
+        let color: Color = seg.speaker == "You" ? .blue : .green
+        return HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text(seg.speaker.uppercased())
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(color)
+                Text(seg.languageBadge)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(width: 54, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(seg.text)
+                    .font(.callout)
+                    .textSelection(.enabled)
+                if seg.needsTranslation {
+                    if let english = seg.translation, !english.isEmpty {
+                        Text("→ \(english)")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    } else {
+                        Text("translating…")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// A live, in-progress line (no language decided yet), shown faded.
+    private func partialRow(speaker: String, text: String) -> some View {
         let color: Color = speaker == "You" ? .blue : .green
         return HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(speaker.uppercased())
@@ -249,8 +317,7 @@ struct ContentView: View {
                 .frame(width: 54, alignment: .leading)
             Text(text)
                 .font(.callout)
-                .foregroundStyle(faded ? .secondary : .primary)
-                .textSelection(.enabled)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -258,10 +325,7 @@ struct ContentView: View {
     /// Assemble the current live segments into plain text (used by Copy before
     /// the final transcript has been built on Stop).
     private func assembledLiveText() -> String {
-        transcription.segments
-            .sorted { $0.time < $1.time }
-            .map { "[\($0.speaker)] \($0.text)" }
-            .joined(separator: "\n")
+        transcription.assembledTranscript()
     }
 
     // MARK: - Last recording box
@@ -313,7 +377,7 @@ struct ContentView: View {
                 HStack(spacing: 10) {
                     Button {
                         if diarizer.isReady {
-                            diarizer.run(audioURL: url, language: transcription.language)
+                            diarizer.run(audioURL: url)
                         } else {
                             showDiarizeInfo = true
                         }

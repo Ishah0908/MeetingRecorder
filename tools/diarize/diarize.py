@@ -60,6 +60,8 @@ def main():
                         help="Whisper model size: tiny/base/small/medium/large-v3 (default: small)")
     parser.add_argument("--language", default=None,
                         help="Language code (en, es, …). Auto-detected if omitted.")
+    parser.add_argument("--translate", action="store_true",
+                        help="Translate the transcript to English regardless of spoken language.")
     parser.add_argument("--hf-token", dest="hf_token", default=None,
                         help="Hugging Face access token (for the gated pyannote model).")
     parser.add_argument("--min-speakers", type=int, default=None,
@@ -102,9 +104,11 @@ def main():
     model = whisperx.load_model(args.model, device, compute_type=compute_type,
                                 language=args.language)
 
-    print("[2/4] Transcribing…", flush=True)
-    result = model.transcribe(audio, batch_size=16)
-    language = result.get("language", args.language or "en")
+    task = "translate" if args.translate else "transcribe"
+    print(f"[2/4] {'Translating to English' if args.translate else 'Transcribing'}…", flush=True)
+    result = model.transcribe(audio, batch_size=16, task=task)
+    # When translating, the output text is English; align against English.
+    language = "en" if args.translate else result.get("language", args.language or "en")
 
     print("[3/4] Aligning words to audio…", flush=True)
     try:

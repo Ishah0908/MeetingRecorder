@@ -94,10 +94,13 @@ final class DiarizationRunner: ObservableObject {
     /// Run diarization on `audioURL`. Streams progress into `status`; on success
     /// sets `outputURL` to the produced transcript.
     ///
+    /// The tool auto-detects the language (Whisper), so no language is passed.
+    ///
     /// - Parameters:
     ///   - audioURL: The mixed WAV to analyse.
-    ///   - language: Transcription language; only the base code (en/es) is passed.
-    func run(audioURL: URL, language: TranscriptionLanguage) {
+    ///   - translateToEnglish: When `true`, output is translated to English
+    ///     regardless of the spoken language.
+    func run(audioURL: URL, translateToEnglish: Bool = false) {
         guard !isRunning else { return }
         guard let scriptPath, FileManager.default.fileExists(atPath: scriptPath) else {
             lastError = "Diarization tool not located. Click \u{201C}Identify speakers\u{201D} to set it up."
@@ -114,11 +117,13 @@ final class DiarizationRunner: ObservableObject {
         status = "Starting… (first run downloads models, please wait)"
 
         let output = audioURL.deletingPathExtension().appendingPathExtension("diarized.txt")
-        let langCode = String(language.rawValue.prefix(2))   // "en-US" -> "en"
+
+        var args = [scriptPath, audioURL.path, "--output", output.path]
+        if translateToEnglish { args.append("--translate") }
 
         let proc = Process()
         proc.executableURL = python
-        proc.arguments = [scriptPath, audioURL.path, "--output", output.path, "--language", langCode]
+        proc.arguments = args
 
         // Merge stdout + stderr so progress and errors both reach the UI.
         let pipe = Pipe()

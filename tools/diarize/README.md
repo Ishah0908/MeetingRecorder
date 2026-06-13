@@ -55,6 +55,7 @@ Useful flags:
 
 | Flag | Purpose |
 |------|---------|
+| `--translate` | Output English regardless of the spoken language |
 | `--language en` | Skip auto-detect (also `es`, etc.) |
 | `--model medium` | Bigger = more accurate, slower (`tiny`…`large-v3`) |
 | `--min-speakers` / `--max-speakers` | Hint the speaker count |
