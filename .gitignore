@@ -1,0 +1,57 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode build artifacts
+DerivedData/
+build/
+*.xcbuildstate
+*.moved-aside
+
+# Xcode user-specific settings (schemes, breakpoints, layout preferences)
+*.xcodeproj/xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+
+# Xcode Playgrounds
+*.playground/timeline.xctimeline
+*.playground/playground.xcworkspace
+
+# Swift Package Manager cache
+.build/
+.swiftpm/
+
+# CocoaPods (not used here, but included for safety)
+Pods/
+Podfile.lock
+
+# Carthage (not used here)
+Carthage/Build/
+
+# Compiled Swift modules that shouldn't be committed
+*.swiftmodule/
+
+# Code coverage
+*.gcno
+*.gcda
+
+# Instruments
+*.trace
+
+# Archives / exports
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Environment / secrets
+.env
+*.pem
+*.p12
+*.mobileprovision
+
+# Editor swap files
+*~
+*.swp
+*.swo

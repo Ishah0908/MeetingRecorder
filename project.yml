@@ -1,0 +1,37 @@
+name: MeetingRecorder
+
+options:
+  bundleIdPrefix: com.meetingrecorder
+  deploymentTarget:
+    macOS: "15.0"
+  xcodeVersion: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  MeetingRecorder:
+    type: application
+    platform: macOS
+    sources:
+      - path: MeetingRecorder
+    entitlements:
+      path: MeetingRecorder/MeetingRecorder.entitlements
+    info:
+      path: MeetingRecorder/Info.plist
+      properties:
+        CFBundleName: MeetingRecorder
+        CFBundleDisplayName: MeetingRecorder
+        CFBundleIdentifier: com.meetingrecorder.app
+        CFBundleVersion: "1"
+        CFBundleShortVersionString: "1.0"
+        NSMicrophoneUsageDescription: "MeetingRecorder needs microphone access to record your voice during calls."
+        NSScreenCaptureDescription: "MeetingRecorder needs Screen Recording access to capture system audio from calls."
+        LSMinimumSystemVersion: "15.0"
+    settings:
+      base:
+        SWIFT_VERSION: "5.10"
+        MACOSX_DEPLOYMENT_TARGET: "15.0"
+        PRODUCT_BUNDLE_IDENTIFIER: com.meetingrecorder.app
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGNING_REQUIRED: "NO"
+        CODE_SIGNING_ALLOWED: "YES"
