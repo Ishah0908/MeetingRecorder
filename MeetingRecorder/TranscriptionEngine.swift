@@ -101,8 +101,16 @@ final class SourceRecognizer {
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
     private var running = false
+    private var stopping = false
 
     private var consecutiveFailures = 0
+
+    /// `true` once `stop()` has been called — the engine flushes the final
+    /// partial itself, so the recognizer must not also commit on teardown
+    /// (that would duplicate the last sentence).
+    private var isStopping: Bool {
+        lock.lock(); defer { lock.unlock() }; return stopping
+    }
 
     /// Latest partial (in-progress) text for this source.
     var onPartial: ((String) -> Void)?
@@ -137,13 +145,14 @@ final class SourceRecognizer {
     func stop() {
         lock.lock()
         running = false
+        stopping = true
         let req = request
         let t = task
         request = nil
         task = nil
         lock.unlock()
         req?.endAudio()
-        t?.finish()
+        t?.cancel()
     }
 
     // MARK: Private
@@ -159,33 +168,53 @@ final class SourceRecognizer {
         self.request = req
         lock.unlock()
 
-        // Track the most recent text so we can still commit something if the
-        // task ends with an error rather than a clean isFinal.
-        var lastText = ""
+        // The full text recognized in THIS request so far. Partials are
+        // cumulative, so this grows as the user speaks. We commit it (never just
+        // the `isFinal` text) whenever the request ends, so nothing is lost even
+        // if the final result comes back empty.
+        var accumulated = ""
+
+        // Commit the accumulated text as a finished segment and reset it.
+        // Idempotent: a second call with nothing new does nothing.
+        let commitAccumulated: () -> Void = { [weak self] in
+            let trimmed = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            self?.onSegment?(accumulated, Date())
+            accumulated = ""
+        }
 
         let t = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
 
             if let result {
                 let text = result.bestTranscription.formattedString
-                lastText = text
-                // Any real output means the recognizer is healthy — clear the
-                // failure counter so an earlier hiccup doesn't trip the cap.
-                if !text.isEmpty { self.lock.lock(); self.consecutiveFailures = 0; self.lock.unlock() }
+
+                // Detect an internal reset: the recognizer dropped its earlier
+                // text and started a fresh utterance within the same request
+                // (happens after a pause). Commit what we had before it's
+                // overwritten. Only triggers on a dramatic shrink so normal
+                // word-by-word refinement (which grows) never misfires.
+                if !accumulated.isEmpty, !text.isEmpty,
+                   text.count + 12 < accumulated.count,
+                   !accumulated.hasPrefix(String(text.prefix(8))) {
+                    commitAccumulated()
+                }
+
+                if !text.isEmpty {
+                    accumulated = text
+                    // Healthy output — clear the failure counter.
+                    self.lock.lock(); self.consecutiveFailures = 0; self.lock.unlock()
+                }
                 self.onPartial?(text)
 
                 if result.isFinal {
-                    if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        self.onSegment?(text, Date())
-                    }
+                    if !self.isStopping { commitAccumulated() }
                     self.restart(afterError: false)
                 }
             }
 
             if error != nil {
-                if !lastText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    self.onSegment?(lastText, Date())
-                }
+                if !self.isStopping { commitAccumulated() }
                 self.restart(afterError: true)
             }
         }
@@ -217,7 +246,10 @@ final class SourceRecognizer {
         }
 
         if afterError {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            // Short delay avoids a tight loop on a persistently-failing
+            // recognizer (capped above), while keeping the audio gap small at
+            // the recognizer's ~1-minute boundary.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.15) { [weak self] in
                 self?.beginRequest()
             }
         } else {
