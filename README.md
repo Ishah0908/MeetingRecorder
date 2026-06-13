@@ -115,6 +115,30 @@ Apple's Speech framework has **no built-in speaker diarization** — you can't g
 
 Live recognition prefers **on-device** transcription (`requiresOnDeviceRecognition`) so it runs continuously for long meetings and works offline.
 
+#### Languages
+
+A language picker (English / Spanish) sits above the Start button. The selection sets the `SFSpeechRecognizer` locale for both the live and file-based transcribers, and is locked while recording. Add more languages by extending `TranscriptionLanguage` in `TranscriptionEngine.swift` with any identifier from `SFSpeechRecognizer.supportedLocales()`.
+
+---
+
+## Troubleshooting
+
+### "It keeps asking for permission / the Settings prompt loops"
+
+This happens when the app is **ad-hoc signed**. Ad-hoc signatures change on every rebuild, so macOS treats each build as a new app and forgets the Screen Recording / Speech / Microphone grant — re-prompting forever.
+
+The project is configured to sign with a stable **Apple Development** identity (`CODE_SIGN_IDENTITY` in `project.yml`), which fixes this: the permission grant persists across rebuilds. If you fork this repo, set `CODE_SIGN_IDENTITY` to your own identity (find it with `security find-identity -v -p codesigning`).
+
+If you previously ran an ad-hoc build and are still being re-prompted, clear the stale grants once:
+
+```bash
+tccutil reset ScreenCapture com.meetingrecorder.app
+tccutil reset SpeechRecognition com.meetingrecorder.app
+tccutil reset Microphone com.meetingrecorder.app
+```
+
+Then run the (properly signed) app and grant each permission a final time. After granting **Screen Recording**, macOS requires the app to be **quit and reopened** once.
+
 ---
 
 ## Project structure

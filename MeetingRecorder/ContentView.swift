@@ -49,6 +49,8 @@ struct ContentView: View {
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 420)
 
+            languagePicker
+
             startStopButton
 
             if hasTranscriptContent {
@@ -89,6 +91,25 @@ struct ContentView: View {
         }
         .onChange(of: engine.isRecording) { _, recording in
             pulse = recording
+        }
+    }
+
+    // MARK: - Language
+
+    /// Picks the transcription language. Locked while recording so the live
+    /// recognizers aren't swapped mid-session.
+    private var languagePicker: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "globe")
+                .foregroundStyle(.secondary)
+            Picker("Language", selection: $transcription.language) {
+                ForEach(TranscriptionLanguage.allCases) { lang in
+                    Text(lang.displayName).tag(lang)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 220)
+            .disabled(engine.isRecording)
         }
     }
 

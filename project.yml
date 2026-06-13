@@ -35,7 +35,12 @@ targets:
         SWIFT_VERSION: "5.10"
         MACOSX_DEPLOYMENT_TARGET: "15.0"
         PRODUCT_BUNDLE_IDENTIFIER: com.meetingrecorder.app
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: ""
-        CODE_SIGNING_REQUIRED: "NO"
-        CODE_SIGNING_ALLOWED: "YES"
+        # Sign with a STABLE Apple Development identity (not ad-hoc).
+        # Ad-hoc signatures change on every rebuild, which makes macOS forget
+        # granted Screen Recording / Speech / Microphone permissions and
+        # re-prompt endlessly. A real signing identity keeps the grant stable.
+        # Manual signing is used because this app is run locally, not
+        # distributed — macOS dev-signed apps don't need a provisioning profile.
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "FCA42E323914AB830BBA766A39230C35D2878E0F"
+        PROVISIONING_PROFILE_SPECIFIER: ""

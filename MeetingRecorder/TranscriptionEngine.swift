@@ -67,6 +67,27 @@ enum TranscriptionError: LocalizedError {
     }
 }
 
+// MARK: - Language
+
+/// Languages the user can transcribe in. The raw value is the SFSpeechRecognizer
+/// locale identifier. Add more cases here to offer more languages — any locale
+/// listed by `SFSpeechRecognizer.supportedLocales()` will work.
+enum TranscriptionLanguage: String, CaseIterable, Identifiable {
+    case english        = "en-US"
+    case spanishSpain   = "es-ES"
+    case spanishMexico  = "es-MX"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .english:       return "English"
+        case .spanishSpain:  return "Spanish (Spain)"
+        case .spanishMexico: return "Spanish (Mexico)"
+        }
+    }
+}
+
 // MARK: - Transcript segment
 
 /// One finalized chunk of speech attributed to a source.
@@ -100,10 +121,14 @@ final class SourceRecognizer {
     private var task: SFSpeechRecognitionTask?
     private var running = false
 
+    private var consecutiveFailures = 0
+
     /// Latest partial (in-progress) text for this source.
     var onPartial: ((String) -> Void)?
     /// A finalized chunk of text plus the time it finalized.
     var onSegment: ((String, Date) -> Void)?
+    /// Called if recognition gives up after repeated immediate failures.
+    var onError: ((String) -> Void)?
 
     init(label: String, locale: Locale) {
         self.label = label
@@ -163,13 +188,16 @@ final class SourceRecognizer {
             if let result {
                 let text = result.bestTranscription.formattedString
                 lastText = text
+                // Any real output means the recognizer is healthy — clear the
+                // failure counter so an earlier hiccup doesn't trip the cap.
+                if !text.isEmpty { self.lock.lock(); self.consecutiveFailures = 0; self.lock.unlock() }
                 self.onPartial?(text)
 
                 if result.isFinal {
                     if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         self.onSegment?(text, Date())
                     }
-                    self.restartIfRunning()
+                    self.restart(afterError: false)
                 }
             }
 
@@ -177,7 +205,7 @@ final class SourceRecognizer {
                 if !lastText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     self.onSegment?(lastText, Date())
                 }
-                self.restartIfRunning()
+                self.restart(afterError: true)
             }
         }
 
@@ -186,13 +214,34 @@ final class SourceRecognizer {
 
     /// Tear down the finished request and, if still running, start a fresh one
     /// so recognition continues for the whole meeting.
-    private func restartIfRunning() {
+    ///
+    /// A clean finalization restarts immediately. An error restarts after a
+    /// short delay, and after several back-to-back errors we stop entirely so a
+    /// permanently-failing recognizer can't spin in a tight loop.
+    private func restart(afterError: Bool) {
         lock.lock()
         let stillRunning = running
         request = nil
         task = nil
+        if afterError { consecutiveFailures += 1 } else { consecutiveFailures = 0 }
+        let failures = consecutiveFailures
         lock.unlock()
-        if stillRunning { beginRequest() }
+
+        guard stillRunning else { return }
+
+        if failures >= 8 {
+            lock.lock(); running = false; lock.unlock()
+            onError?("Live transcription stopped after repeated recognition errors.")
+            return
+        }
+
+        if afterError {
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.beginRequest()
+            }
+        } else {
+            beginRequest()
+        }
     }
 }
 
@@ -231,18 +280,22 @@ final class TranscriptionEngine: ObservableObject {
     /// Human-readable status for the UI.
     @Published var status = ""
 
+    /// Language used for transcription (live and file). Changeable while idle.
+    @Published var language: TranscriptionLanguage = .english
+
     // MARK: Private
 
     // Two independent live recognizers, one per audio source. nonisolated(unsafe)
     // so the nonisolated append methods can reach them from the audio thread.
-    nonisolated(unsafe) private let you: SourceRecognizer
-    nonisolated(unsafe) private let others: SourceRecognizer
+    // Recreated for the chosen language at the start of each live session.
+    nonisolated(unsafe) private var you: SourceRecognizer
+    nonisolated(unsafe) private var others: SourceRecognizer
 
     // File-mode task.
     private var recognitionTask: SFSpeechRecognitionTask?
 
     init() {
-        let locale = Locale(identifier: "en-US")
+        let locale = Locale(identifier: TranscriptionLanguage.english.rawValue)
         you = SourceRecognizer(label: "You", locale: locale)
         others = SourceRecognizer(label: "Others", locale: locale)
     }
@@ -275,8 +328,13 @@ final class TranscriptionEngine: ObservableObject {
             return
         }
 
+        // Build fresh recognizers for the selected language.
+        let locale = Locale(identifier: language.rawValue)
+        you = SourceRecognizer(label: "You", locale: locale)
+        others = SourceRecognizer(label: "Others", locale: locale)
+
         guard you.isUsable, others.isUsable else {
-            status = "Live transcription off — recognizer unavailable for en-US."
+            status = "Live transcription off — \(language.displayName) isn't available for recognition on this Mac."
             isLive = false
             return
         }
@@ -295,13 +353,16 @@ final class TranscriptionEngine: ObservableObject {
         others.onSegment = { [weak self] text, time in
             Task { @MainActor in self?.commit(speaker: "Others", text: text, time: time) }
         }
+        let onErr: (String) -> Void = { [weak self] msg in
+            Task { @MainActor in self?.status = msg }
+        }
+        you.onError = onErr
+        others.onError = onErr
 
         you.start()
         others.start()
         isLive = true
-        status = you.isUsable && others.isUsable
-            ? "Live transcription running…"
-            : status
+        status = "Live transcription running (\(language.displayName))…"
     }
 
     /// Stop live transcription, flush any trailing partials, assemble the
@@ -371,12 +432,12 @@ final class TranscriptionEngine: ObservableObject {
         do {
             try await requestAuthorization()
 
-            guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+            guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: language.rawValue)),
                   recognizer.isAvailable else {
                 throw TranscriptionError.recognizerUnavailable
             }
 
-            status = "Transcribing file…"
+            status = "Transcribing file (\(language.displayName))…"
             let text = try await recognize(url: audioURL, with: recognizer)
             transcript = text
 
