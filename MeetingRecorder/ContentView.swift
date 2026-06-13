@@ -182,8 +182,8 @@ struct ContentView: View {
                 ScrollViewReader { proxy in
                     ScrollView {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(transcription.segments) { seg in
-                                segmentRow(speaker: seg.speaker, text: seg.text, faded: false)
+                            ForEach(transcription.groupedSegments) { group in
+                                segmentRow(speaker: group.speaker, text: group.text, faded: false)
                             }
                             if !transcription.livePartialYou.isEmpty {
                                 segmentRow(speaker: "You", text: transcription.livePartialYou, faded: true)

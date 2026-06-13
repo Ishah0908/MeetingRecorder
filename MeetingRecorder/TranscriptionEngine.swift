@@ -81,6 +81,14 @@ struct TranscriptSegment: Identifiable {
     let time: Date
 }
 
+/// Several consecutive same-speaker segments merged into one flowing block, so
+/// the transcript reads as continuous prose instead of many short lines.
+struct TranscriptGroup: Identifiable {
+    let id: UUID
+    let speaker: String
+    let text: String
+}
+
 // MARK: - Per-source live recognizer
 
 /// Drives one continuous live recognition stream for a single audio source.
@@ -417,12 +425,32 @@ final class TranscriptionEngine: ObservableObject {
         }
     }
 
-    /// Build the full transcript text: the two streams interleaved by time,
-    /// each line tagged with its speaker.
+    /// Live segments merged into flowing per-speaker blocks (commit order),
+    /// for continuous on-screen display.
+    var groupedSegments: [TranscriptGroup] {
+        Self.mergeRuns(segments)
+    }
+
+    /// Build the full transcript text: the two streams interleaved by time and
+    /// merged into flowing per-speaker blocks, each tagged with its speaker.
     func assembledTranscript() -> String {
-        segments.sorted { $0.time < $1.time }
+        Self.mergeRuns(segments.sorted { $0.time < $1.time })
             .map { "[\($0.speaker)] \($0.text)" }
             .joined(separator: "\n")
+    }
+
+    /// Merge runs of consecutive same-speaker segments into single blocks.
+    private static func mergeRuns(_ segs: [TranscriptSegment]) -> [TranscriptGroup] {
+        var groups: [TranscriptGroup] = []
+        for seg in segs {
+            if let last = groups.last, last.speaker == seg.speaker {
+                groups[groups.count - 1] = TranscriptGroup(
+                    id: last.id, speaker: last.speaker, text: last.text + " " + seg.text)
+            } else {
+                groups.append(TranscriptGroup(id: seg.id, speaker: seg.speaker, text: seg.text))
+            }
+        }
+        return groups
     }
 
     /// Append a finalized segment and clear that source's live partial.
