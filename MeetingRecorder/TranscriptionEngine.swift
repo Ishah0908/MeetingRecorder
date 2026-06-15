@@ -133,6 +133,15 @@ final class SourceRecognizer {
     /// recover quickly.
     private let stallTimeout: TimeInterval = 12
 
+    /// Audio buffers that arrive while there is no active request (i.e. during
+    /// the brief gap between one request finalizing and the next starting). They
+    /// are replayed into the new request so no speech is dropped at the seam —
+    /// this is what stops words being "eaten" at every pause/restart. Capped so
+    /// a long unavailable stretch can't grow it without bound; ~200 buffers of
+    /// 1024 frames at 48 kHz ≈ 4 seconds of audio.
+    private var pendingBuffers: [AVAudioPCMBuffer] = []
+    private let maxPendingBuffers = 200
+
     /// `true` once `stop()` has been called — the engine flushes the final
     /// partial itself, so the recognizer must not also commit on teardown
     /// (that would duplicate the last sentence).
@@ -165,9 +174,24 @@ final class SourceRecognizer {
     }
 
     /// Append a captured audio buffer. Safe to call from the audio thread.
+    ///
+    /// If a request is live the buffer goes straight in. If we're between
+    /// requests (the restart seam) it's stashed so the next request can replay
+    /// it — otherwise that audio, and the words in it, would be lost. The append
+    /// is done under the lock so a replay (also under the lock) can never
+    /// interleave with a live append and reorder the stream.
     func append(_ buffer: AVAudioPCMBuffer) {
-        lock.lock(); let req = request; audioSinceResult = true; lock.unlock()
-        req?.append(buffer)
+        lock.lock()
+        audioSinceResult = true
+        if let req = request {
+            req.append(buffer)
+        } else {
+            pendingBuffers.append(buffer)
+            if pendingBuffers.count > maxPendingBuffers {
+                pendingBuffers.removeFirst(pendingBuffers.count - maxPendingBuffers)
+            }
+        }
+        lock.unlock()
     }
 
     /// Stop recognition and release the current task/request.
@@ -180,6 +204,7 @@ final class SourceRecognizer {
         let t = task
         request = nil
         task = nil
+        pendingBuffers.removeAll()
         lock.unlock()
         req?.endAudio()
         t?.cancel()
@@ -216,12 +241,6 @@ final class SourceRecognizer {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = preferOnDevice
         req.addsPunctuation = true
-
-        lock.lock()
-        self.request = req
-        self.lastResultAt = Date()
-        self.audioSinceResult = false
-        lock.unlock()
 
         let t = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
@@ -270,7 +289,17 @@ final class SourceRecognizer {
             }
         }
 
-        lock.lock(); self.task = t; lock.unlock()
+        // Publish the request and immediately replay any audio that piled up
+        // during the restart seam — all under the lock, so a live append can't
+        // slip in ahead of the replayed buffers and reorder the stream.
+        lock.lock()
+        self.task = t
+        self.request = req
+        for buf in pendingBuffers { req.append(buf) }
+        pendingBuffers.removeAll()
+        self.lastResultAt = Date()
+        self.audioSinceResult = false
+        lock.unlock()
     }
 
     /// Tear down the finished request and, if still running, schedule a fresh
