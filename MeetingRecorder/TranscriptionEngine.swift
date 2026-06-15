@@ -391,6 +391,24 @@ final class TranscriptionEngine: ObservableObject {
     // File-mode task.
     private var recognitionTask: SFSpeechRecognitionTask?
 
+    // MARK: Streaming transcript file
+    //
+    // The transcript is written to a dated .txt file the moment recording
+    // starts and APPENDED line-by-line as each phrase is finalized — so the
+    // whole meeting is on disk as it happens and nothing is ever dropped, no
+    // matter how long the call runs or how much scrolls off screen. The
+    // in-memory `segments` only drive the live on-screen view.
+    private let fileQueue = DispatchQueue(label: "com.meetingrecorder.transcriptfile")
+    nonisolated(unsafe) private var transcriptHandle: FileHandle?
+
+    /// Friendly date for the file header (e.g. "June 15, 2026 at 2:30 PM").
+    private static let headerDateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .long
+        f.timeStyle = .short
+        return f
+    }()
+
     init() {
         let locale = Locale(identifier: "en-US")
         you = SourceRecognizer(label: "You", locale: locale)
@@ -436,6 +454,10 @@ final class TranscriptionEngine: ObservableObject {
             return
         }
 
+        // Open the dated transcript file now so every recognized line is saved
+        // to disk as it arrives (and the UI can reveal it immediately).
+        openTranscriptFile()
+
         // Wire callbacks. They fire on a background queue, so hop to the main
         // actor before touching @Published state.
         you.onPartial = { [weak self] text in
@@ -462,12 +484,13 @@ final class TranscriptionEngine: ObservableObject {
         status = "Live transcription running…"
     }
 
-    /// Stop live transcription, flush any trailing partials, assemble the
-    /// interleaved transcript and (if a recording URL is given) save it as a
-    /// `.txt` beside the WAV.
+    /// Stop live transcription, flush any trailing partials, and close the
+    /// streaming transcript file. The file has been written incrementally the
+    /// whole time, so there's nothing to assemble or re-save here — closing it
+    /// just flushes the last line.
     ///
-    /// - Parameter audioURL: The mixed WAV from `AudioCaptureEngine`, used to
-    ///   derive the `.txt` path. Pass `nil` to skip saving.
+    /// - Parameter audioURL: Unused now that the transcript streams to its own
+    ///   dated file; kept so existing callers don't change.
     func stopLive(besideAudio audioURL: URL?) async {
         guard isLive else { return }
 
@@ -475,7 +498,8 @@ final class TranscriptionEngine: ObservableObject {
         others.stop()
         isLive = false
 
-        // Flush any leftover in-progress text as final segments.
+        // Flush any leftover in-progress text as final segments (these append to
+        // the file too, via commit()).
         if !livePartialYou.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             commit(speaker: "You", text: livePartialYou, time: Date())
         }
@@ -483,24 +507,71 @@ final class TranscriptionEngine: ObservableObject {
             commit(speaker: "Others", text: livePartialOthers, time: Date())
         }
 
-        guard !segments.isEmpty else {
-            status = "No speech was transcribed."
-            return
-        }
-
+        await closeTranscriptFile()
         transcript = assembledTranscript()
 
-        if let audioURL {
-            let txtURL = audioURL.deletingPathExtension().appendingPathExtension("txt")
-            do {
-                try transcript.write(to: txtURL, atomically: true, encoding: .utf8)
-                transcriptURL = txtURL
-                status = "Saved: \(txtURL.lastPathComponent)"
-            } catch {
-                status = "Transcript captured but couldn't be saved — \(error.localizedDescription)"
-            }
+        if segments.isEmpty {
+            status = "No speech was transcribed."
+        } else if let url = transcriptURL {
+            status = "Saved transcript: \(url.lastPathComponent)"
         } else {
             status = "Transcript captured."
+        }
+    }
+
+    // MARK: - Streaming transcript file
+
+    /// Create a fresh, dated transcript file in ~/Documents/MeetingRecordings/
+    /// and open it for appending. Sets `transcriptURL` so the UI can reveal it
+    /// right away, while recording is still in progress.
+    private func openTranscriptFile() {
+        do {
+            let docs = try FileManager.default.url(for: .documentDirectory,
+                                                   in: .userDomainMask,
+                                                   appropriateFor: nil, create: true)
+            let folder = docs.appendingPathComponent("MeetingRecordings", isDirectory: true)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+
+            let now = Date()
+            let stamp = ISO8601DateFormatter().string(from: now)
+                .replacingOccurrences(of: ":", with: "-")
+            let url = folder.appendingPathComponent("meeting-\(stamp).txt")
+
+            let header = "Meeting transcript — \(Self.headerDateFormatter.string(from: now))\n\n"
+            try header.write(to: url, atomically: true, encoding: .utf8)
+
+            let handle = try FileHandle(forWritingTo: url)
+            handle.seekToEndOfFile()
+            transcriptHandle = handle
+            transcriptURL = url
+        } catch {
+            // Recording can still proceed; we just won't have a live file.
+            transcriptHandle = nil
+            transcriptURL = nil
+            status = "Couldn't create transcript file — \(error.localizedDescription)"
+        }
+    }
+
+    /// Append one finalized line to the transcript file. Runs on a serial queue
+    /// so writes stay ordered and never block the main thread.
+    private func appendLineToFile(speaker: String, text: String) {
+        guard let handle = transcriptHandle,
+              let data = "[\(speaker)] \(text)\n".data(using: .utf8) else { return }
+        fileQueue.async { try? handle.write(contentsOf: data) }
+    }
+
+    /// Flush and close the transcript file on the serial queue (so it runs after
+    /// any pending appends), then clear the handle.
+    private func closeTranscriptFile() async {
+        let handle = transcriptHandle
+        transcriptHandle = nil
+        guard handle != nil else { return }
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            fileQueue.async {
+                try? handle?.synchronize()
+                try? handle?.close()
+                cont.resume()
+            }
         }
     }
 
@@ -532,10 +603,15 @@ final class TranscriptionEngine: ObservableObject {
         return groups
     }
 
-    /// Append a finalized segment and clear that source's live partial.
+    /// Append a finalized segment: write it straight to the transcript file
+    /// (so it's saved the instant it's recognized) and keep it in memory for the
+    /// live on-screen view.
     private func commit(speaker: String, text: String, time: Date) {
-        segments.append(TranscriptSegment(speaker: speaker, text: text, time: time))
+        let clean = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        segments.append(TranscriptSegment(speaker: speaker, text: clean, time: time))
         if speaker == "You" { livePartialYou = "" } else { livePartialOthers = "" }
+        appendLineToFile(speaker: speaker, text: clean)
     }
 
     // MARK: - File-based API (fallback / re-transcribe)

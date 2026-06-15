@@ -105,7 +105,7 @@ Transcription runs in two ways:
 | 🔵 **You** | Microphone | Your own voice |
 | 🟢 **Others** | System audio | Everyone else on the call |
 
-On Stop, the two streams are interleaved by time into one conversation and saved as a `.txt` beside the WAV.
+A dated transcript file (`meeting-<stamp>.txt`) is created in `~/Documents/MeetingRecordings/` the instant you press Start, and **every recognized line is appended to it as it happens.** The full meeting is therefore on disk the entire time — nothing is lost no matter how long the call runs or how much scrolls off the screen. Use the **Show file** button in the transcript panel to reveal it in Finder at any point, even mid-recording. On Stop the file is simply flushed and closed.
 
 **File (fallback).** A **Re-transcribe file** button runs `SFSpeechURLRecognitionRequest` on the finished mix — useful if live transcription wasn't available (e.g. permission was granted after recording started).
 
