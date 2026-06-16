@@ -187,6 +187,19 @@ final class AudioCaptureEngine: NSObject, ObservableObject {
         // nothing to cancel.
         do {
             try input.setVoiceProcessingEnabled(true)
+
+            // By default the voice-processing unit aggressively DUCKS (lowers)
+            // all other audio while it's active — which is why the call sounds
+            // quieter with the app running. Turn ducking down to the minimum so
+            // you still hear everyone at full volume; echo cancellation keeps
+            // working regardless.
+            if #available(macOS 14.0, *) {
+                input.voiceProcessingOtherAudioDuckingConfiguration =
+                    AVAudioVoiceProcessingOtherAudioDuckingConfiguration(
+                        enableAdvancedDucking: false,
+                        duckingLevel: .min
+                    )
+            }
         } catch {
             #if DEBUG
             print("MeetingRecorder: echo cancellation unavailable: \(error.localizedDescription)")
