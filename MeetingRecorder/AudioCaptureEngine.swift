@@ -176,11 +176,49 @@ final class AudioCaptureEngine: NSObject, ObservableObject {
 
     private func startMicCapture() throws {
         let input = micEngine.inputNode
-        let inputFormat = input.inputFormat(forBus: 0)
 
+        // Acoustic echo cancellation (AEC): without it, when you're NOT on
+        // headphones the call audio coming out of your speakers is re-recorded
+        // by the microphone — so remote voices bleed into the "You" stream and
+        // get transcribed as if you said them, and both sides end up mirroring
+        // each other. Apple's voice-processing unit subtracts the speaker
+        // output (and suppresses background noise) from the mic signal, which is
+        // exactly what VoIP apps do. Harmless on headphones, where there's
+        // nothing to cancel.
+        do {
+            try input.setVoiceProcessingEnabled(true)
+        } catch {
+            #if DEBUG
+            print("MeetingRecorder: echo cancellation unavailable: \(error.localizedDescription)")
+            #endif
+        }
+
+        installMicTap(on: input)
+
+        micEngine.prepare()
+        do {
+            try micEngine.start()
+        } catch {
+            // A few audio configurations refuse to start with voice processing
+            // engaged. Fall back to a plain mic so recording still works (just
+            // without AEC — use headphones in that case).
+            guard input.isVoiceProcessingEnabled else { throw error }
+            input.removeTap(onBus: 0)
+            try? input.setVoiceProcessingEnabled(false)
+            installMicTap(on: input)
+            micEngine.prepare()
+            try micEngine.start()
+        }
+    }
+
+    /// Install the continuous mic tap that converts each buffer to the shared
+    /// output format, writes it to the mic temp file, and forwards it to the
+    /// live transcriber. Reads the input format fresh so it reflects whatever
+    /// voice-processing state is currently active.
+    private func installMicTap(on input: AVAudioInputNode) {
+        let inputFormat = input.inputFormat(forBus: 0)
         micConverter = AVAudioConverter(from: inputFormat, to: outputFormat)
 
-        // Tap the mic. Runs continuously and independently of system capture.
         input.installTap(onBus: 0, bufferSize: 1024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             self.writeQueue.async {
@@ -191,9 +229,6 @@ final class AudioCaptureEngine: NSObject, ObservableObject {
                 self.onMicBuffer?(converted)   // forward to live transcriber
             }
         }
-
-        micEngine.prepare()
-        try micEngine.start()
     }
 
     // MARK: - Conversion helper
