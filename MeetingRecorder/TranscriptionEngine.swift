@@ -241,6 +241,11 @@ final class SourceRecognizer {
         req.shouldReportPartialResults = true
         req.requiresOnDeviceRecognition = preferOnDevice
         req.addsPunctuation = true
+        // Tell the recognizer to expect continuous, free-form speech rather than
+        // the default short "command" style. The default finalizes eagerly and
+        // drops words between phrases in a flowing conversation; `.dictation`
+        // keeps it listening for whole sentences, so far fewer words get eaten.
+        req.taskHint = .dictation
 
         let t = recognizer.recognitionTask(with: req) { [weak self] result, error in
             guard let self else { return }
